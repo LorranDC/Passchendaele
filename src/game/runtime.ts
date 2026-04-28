@@ -86,13 +86,15 @@ export class GameRuntime {
   private audioCtx: AudioContext | null = null;
   private soundLoadPromise: Promise<void> | null = null;
   private soundBufs: Record<string, AudioBuffer> = {};
+  private noiseBuffer: AudioBuffer | null = null;
   private engineNode: AudioBufferSourceNode | null = null;
   private engineGain: GainNode | null = null;
   private engineState: "off" | "starting" | "running" | "idle" = "off";
+  private readonly bulletAxis = new THREE.Vector3(0, 1, 0);
 
   private readonly onMouseMoveBound = (e: MouseEvent) => this.onMouseMove(e);
-  private readonly onMouseDownBound = (e: MouseEvent) => this.onMouseDown(e);
-  private readonly onMouseUpBound = (_e: MouseEvent) => this.onMouseUp();
+  private readonly onMouseDownBound = () => this.onMouseDown();
+  private readonly onMouseUpBound = () => this.onMouseUp();
   private readonly onKeyDownBound = (e: KeyboardEvent) => this.onKeyDown(e);
   private readonly onKeyUpBound = (e: KeyboardEvent) => this.onKeyUp(e);
   private readonly onResizeBound = () => this.onResize();
@@ -933,13 +935,32 @@ export class GameRuntime {
     const dir = this.getFireDir();
     const pos = this.getMuzzlePos();
 
-    const blt = new THREE.Mesh(
-      new THREE.SphereGeometry(this.weapon === "cannon" ? 0.22 : 0.08, 6, 6),
-      new THREE.MeshBasicMaterial({
-        color: this.weapon === "cannon" ? 0xf0a030 : 0xffe060,
-      }),
-    );
+    const blt =
+      this.weapon === "cannon"
+        ? new THREE.Mesh(
+            new THREE.SphereGeometry(0.2, 10, 10),
+            new THREE.MeshStandardMaterial({
+              color: 0xeea24a,
+              emissive: 0x8a4512,
+              emissiveIntensity: 0.95,
+              roughness: 0.35,
+              metalness: 0.2,
+            }),
+          )
+        : new THREE.Mesh(
+            new THREE.CylinderGeometry(0.03, 0.04, 0.34, 8),
+            new THREE.MeshStandardMaterial({
+              color: 0xffcf85,
+              emissive: 0x8f5f20,
+              emissiveIntensity: 0.9,
+              roughness: 0.25,
+              metalness: 0.12,
+            }),
+          );
     blt.position.copy(pos);
+    blt.castShadow = false;
+    blt.receiveShadow = false;
+    blt.quaternion.setFromUnitVectors(this.bulletAxis, dir);
     this.scene.add(blt);
 
     const speed =
@@ -964,9 +985,13 @@ export class GameRuntime {
 
     this.spawnMuzzleFlash(pos, this.weapon === "cannon");
     if (this.weapon === "cannon") {
-      this.playAny(["cannon_fire", "cannon", "gun_fire"], 0.95);
+      if (!this.playAny(["cannon_fire", "cannon", "gun_fire"], 0.95)) {
+        this.playSynthShot("cannon");
+      }
     } else {
-      this.playAny(["mg_fire", "mg", "machinegun"], 0.72);
+      if (!this.playAny(["mg_fire", "mg", "machinegun"], 0.72)) {
+        this.playSynthShot("mg");
+      }
     }
     this.pushHud();
   }
@@ -990,6 +1015,91 @@ export class GameRuntime {
     });
   }
 
+  private spawnExplosion(pos: THREE.Vector3, strength: number): void {
+    const flash = new THREE.Mesh(
+      new THREE.SphereGeometry(0.25 + strength * 0.75, 8, 8),
+      new THREE.MeshBasicMaterial({
+        color: 0xffc96d,
+        transparent: true,
+        opacity: 0.9,
+      }),
+    );
+    flash.position.copy(pos);
+    this.scene.add(flash);
+    this.particles.push({
+      mesh: flash,
+      vel: new THREE.Vector3(0, 0, 0),
+      life: 0.12 + strength * 0.08,
+      max: 0.12 + strength * 0.08,
+    });
+
+    const sparkCount = Math.floor(14 + strength * 16);
+    for (let i = 0; i < sparkCount; i++) {
+      const spark = new THREE.Mesh(
+        new THREE.SphereGeometry(0.04 + Math.random() * 0.06, 4, 4),
+        new THREE.MeshBasicMaterial({
+          color: Math.random() > 0.5 ? 0xff9f2f : 0xffdf8c,
+          transparent: true,
+          opacity: 0.95,
+        }),
+      );
+      spark.position.copy(pos);
+      this.scene.add(spark);
+
+      const vel = new THREE.Vector3(
+        (Math.random() - 0.5) * 2,
+        Math.random() * 1.4 + 0.2,
+        (Math.random() - 0.5) * 2,
+      )
+        .normalize()
+        .multiplyScalar((8 + Math.random() * 16) * strength);
+
+      const life = 0.24 + Math.random() * 0.36;
+      this.particles.push({
+        mesh: spark,
+        vel,
+        life,
+        max: life,
+      });
+    }
+
+    const smokeCount = Math.floor(8 + strength * 10);
+    for (let i = 0; i < smokeCount; i++) {
+      const smoke = new THREE.Mesh(
+        new THREE.SphereGeometry(0.14 + Math.random() * 0.2, 6, 6),
+        new THREE.MeshBasicMaterial({
+          color: 0x3d3d3d,
+          transparent: true,
+          opacity: 0.62,
+        }),
+      );
+      smoke.position
+        .copy(pos)
+        .add(
+          new THREE.Vector3(
+            (Math.random() - 0.5) * 0.8,
+            Math.random() * 0.25,
+            (Math.random() - 0.5) * 0.8,
+          ),
+        );
+      this.scene.add(smoke);
+      const life = 0.8 + Math.random() * 1.15;
+      this.particles.push({
+        mesh: smoke,
+        vel: new THREE.Vector3(
+          (Math.random() - 0.5) * 0.7,
+          0.65 + Math.random() * 0.8,
+          (Math.random() - 0.5) * 0.7,
+        ),
+        life,
+        max: life,
+        smoke: true,
+      });
+    }
+
+    this.screenShake = Math.max(this.screenShake, 0.12 + strength * 0.2);
+  }
+
   private enemyShoot(e: Enemy): void {
     const dir = new THREE.Vector3()
       .subVectors(this.tank.position, e.mesh.position)
@@ -999,10 +1109,19 @@ export class GameRuntime {
     dir.normalize();
 
     const blt = new THREE.Mesh(
-      new THREE.SphereGeometry(0.18, 5, 5),
-      new THREE.MeshBasicMaterial({ color: 0xff3010 }),
+      new THREE.CylinderGeometry(0.05, 0.06, 0.32, 8),
+      new THREE.MeshStandardMaterial({
+        color: 0xff5a3a,
+        emissive: 0x7f180e,
+        emissiveIntensity: 0.8,
+        roughness: 0.35,
+        metalness: 0.1,
+      }),
     );
     blt.position.copy(e.mesh.position).add(new THREE.Vector3(0, 1, 0));
+    blt.castShadow = false;
+    blt.receiveShadow = false;
+    blt.quaternion.setFromUnitVectors(this.bulletAxis, dir);
     this.scene.add(blt);
 
     this.bullets.push({
@@ -1011,6 +1130,10 @@ export class GameRuntime {
       type: "enemy",
       life: 2.8,
     });
+
+    if (!this.playAny(["enemy_fire", "enemy_shot"], 0.55)) {
+      this.playSynthShot("enemy");
+    }
   }
 
   private updateEnemies(dt: number): void {
@@ -1060,14 +1183,40 @@ export class GameRuntime {
     const dead: number[] = [];
 
     this.bullets.forEach((b, i) => {
-      b.vel.y -= 9.8 * dt * 0.4;
+      const gravity =
+        b.type === "cannon" ? 1.1 : b.type === "mg" ? 0.58 : 0.78;
+      const drag = b.type === "cannon" ? 0.05 : b.type === "mg" ? 0.12 : 0.08;
+      b.vel.multiplyScalar(Math.exp(-drag * dt));
+      b.vel.y -= 9.8 * dt * gravity;
       b.mesh.position.addScaledVector(b.vel, dt);
+      if (b.vel.lengthSq() > 0.001) {
+        b.mesh.quaternion.setFromUnitVectors(
+          this.bulletAxis,
+          b.vel.clone().normalize(),
+        );
+      }
       b.life -= dt;
 
       const ty = this.terrainH(b.mesh.position.x, b.mesh.position.z);
+      if (b.mesh.position.y <= ty + 0.05) {
+        if (b.type === "cannon") {
+          this.spawnExplosion(b.mesh.position.clone(), 0.72);
+          if (!this.playAny(["explosion", "boom"], 0.78)) {
+            this.playSynthExplosion(0.72);
+          }
+        } else {
+          this.spawnMuzzleFlash(b.mesh.position.clone(), false);
+          if (!this.playAny(["impact", "ricochet"], 0.48)) {
+            this.playSynthImpact();
+          }
+        }
+        this.scene.remove(b.mesh);
+        dead.push(i);
+        return;
+      }
+
       if (
         b.life <= 0 ||
-        b.mesh.position.y <= ty + 0.05 ||
         Math.abs(b.mesh.position.x) > 85 ||
         Math.abs(b.mesh.position.z) > 85
       ) {
@@ -1085,10 +1234,18 @@ export class GameRuntime {
             e.hp -= b.type === "cannon" ? 1 : 0.25;
             this.scene.remove(b.mesh);
             dead.push(i);
+            this.spawnExplosion(
+              b.mesh.position.clone(),
+              b.type === "cannon" ? 0.92 : 0.45,
+            );
             if (e.hp <= 0) {
               this.scene.remove(e.mesh);
               this.score += 1;
-              this.playAny(["explosion", "boom"], 0.95);
+              if (!this.playAny(["explosion", "boom"], 0.95)) {
+                this.playSynthExplosion(1);
+              }
+            } else if (!this.playAny(["hit", "armor_hit"], 0.55)) {
+              this.playSynthImpact();
             }
             break;
           }
@@ -1097,9 +1254,16 @@ export class GameRuntime {
         this.hp = Math.max(0, this.hp - 2);
         this.scene.remove(b.mesh);
         dead.push(i);
+        this.spawnExplosion(b.mesh.position.clone(), 0.38);
         this.screenShake = 0.15;
-        this.playAny(["hit", "armor_hit"], 0.85);
+        if (!this.playAny(["hit", "armor_hit"], 0.85)) {
+          this.playSynthImpact();
+        }
         if (this.hp <= 0) {
+          this.spawnExplosion(this.tank.position.clone(), 1.15);
+          if (!this.playAny(["explosion", "boom"], 1)) {
+            this.playSynthExplosion(1.15);
+          }
           this.endGame();
         }
       }
@@ -1114,10 +1278,23 @@ export class GameRuntime {
     const dead: number[] = [];
     this.particles.forEach((p, i) => {
       p.life -= dt;
-      const mat = p.mesh.material;
-      if (mat instanceof THREE.MeshBasicMaterial) {
-        mat.opacity = Math.max(0, p.life / p.max);
+      if (p.smoke) {
+        p.vel.y += dt * 0.45;
+        p.vel.multiplyScalar(Math.exp(-0.95 * dt));
+      } else {
+        p.vel.y -= dt * 4.5;
+        p.vel.multiplyScalar(Math.exp(-2.1 * dt));
       }
+      p.mesh.position.addScaledVector(p.vel, dt);
+
+      const mat = p.mesh.material;
+      const t = 1 - Math.max(0, p.life) / p.max;
+      if (mat instanceof THREE.MeshBasicMaterial) {
+        mat.opacity = p.smoke
+          ? Math.max(0, (1 - t) * 0.55)
+          : Math.max(0, p.life / p.max);
+      }
+      p.mesh.scale.setScalar(p.smoke ? 1 + t * 1.9 : 1 + t * 0.45);
       if (p.life <= 0) {
         this.scene.remove(p.mesh);
         dead.push(i);
@@ -1421,6 +1598,9 @@ export class GameRuntime {
     if (!this.audioCtx) {
       this.audioCtx = new AudioContext();
     }
+    if (this.audioCtx.state === "suspended") {
+      await this.audioCtx.resume();
+    }
     if (!this.soundLoadPromise) {
       this.soundLoadPromise = Promise.resolve();
     }
@@ -1506,10 +1686,10 @@ export class GameRuntime {
     }
   }
 
-  private playAny(keys: string[], volume = 1): void {
-    if (!this.audioCtx) return;
+  private playAny(keys: string[], volume = 1): boolean {
+    if (!this.audioCtx) return false;
     const key = keys.find((candidate) => this.soundBufs[candidate]);
-    if (!key) return;
+    if (!key) return false;
 
     const source = this.audioCtx.createBufferSource();
     source.buffer = this.soundBufs[key];
@@ -1518,6 +1698,111 @@ export class GameRuntime {
     source.connect(gain);
     gain.connect(this.audioCtx.destination);
     source.start();
+    return true;
+  }
+
+  private getNoiseBuffer(): AudioBuffer | null {
+    if (!this.audioCtx) return null;
+    if (this.noiseBuffer) return this.noiseBuffer;
+
+    const sampleRate = this.audioCtx.sampleRate;
+    const frameCount = sampleRate;
+    const buffer = this.audioCtx.createBuffer(1, frameCount, sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < frameCount; i++) {
+      data[i] = Math.random() * 2 - 1;
+    }
+    this.noiseBuffer = buffer;
+    return buffer;
+  }
+
+  private playSynthShot(kind: "cannon" | "mg" | "enemy"): void {
+    if (!this.audioCtx) return;
+    const ctx = this.audioCtx;
+    const now = ctx.currentTime;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    const filter = ctx.createBiquadFilter();
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+
+    if (kind === "cannon") {
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(180, now);
+      osc.frequency.exponentialRampToValueAtTime(48, now + 0.2);
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(1200, now);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.52, now + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
+      osc.start(now);
+      osc.stop(now + 0.24);
+      return;
+    }
+
+    osc.type = kind === "mg" ? "square" : "sawtooth";
+    osc.frequency.setValueAtTime(kind === "mg" ? 520 : 360, now);
+    osc.frequency.exponentialRampToValueAtTime(kind === "mg" ? 250 : 170, now + 0.08);
+    filter.type = "bandpass";
+    filter.Q.value = 1.8;
+    filter.frequency.setValueAtTime(kind === "mg" ? 2400 : 1800, now);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(kind === "mg" ? 0.12 : 0.16, now + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
+    osc.start(now);
+    osc.stop(now + 0.12);
+  }
+
+  private playSynthExplosion(intensity: number): void {
+    if (!this.audioCtx) return;
+    const ctx = this.audioCtx;
+    const noise = this.getNoiseBuffer();
+    if (!noise) return;
+    const now = ctx.currentTime;
+
+    const source = ctx.createBufferSource();
+    source.buffer = noise;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(900 + intensity * 420, now);
+    filter.frequency.exponentialRampToValueAtTime(130, now + 0.6);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.46 * intensity, now + 0.018);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.72);
+
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+    source.start(now);
+    source.stop(now + 0.74);
+  }
+
+  private playSynthImpact(): void {
+    if (!this.audioCtx) return;
+    const ctx = this.audioCtx;
+    const noise = this.getNoiseBuffer();
+    if (!noise) return;
+    const now = ctx.currentTime;
+
+    const source = ctx.createBufferSource();
+    source.buffer = noise;
+    const filter = ctx.createBiquadFilter();
+    filter.type = "highpass";
+    filter.frequency.setValueAtTime(1400, now);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.2, now + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.07);
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+    source.start(now);
+    source.stop(now + 0.08);
   }
 
   private endGame(): void {
@@ -1607,7 +1892,7 @@ export class GameRuntime {
     this.aimScreenY = THREE.MathUtils.clamp(e.clientY, 0, window.innerHeight);
   }
 
-  private onMouseDown(_e: MouseEvent): void {
+  private onMouseDown(): void {
     if (!this.running) return;
     this.requestPointerLock();
     this.keys.Mouse0 = true;
