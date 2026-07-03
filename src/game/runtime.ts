@@ -10,8 +10,9 @@ type RuntimeOptions = {
 
 const BASE_HINT =
   "V - 1a pessoa | W/S mover | A/D girar | Mouse mirar | Clique atirar | TAB trocar arma | R reparar";
-const DEFAULT_TANK_MODEL_FILE = "mark_v_tank_male_2.glb";
+const DEFAULT_TANK_MODEL_FILE = "Mark_V_Male.glb";
 const LEGACY_TANK_MODEL_FILE = "player-tank.glb";
+const SOUND_DATA_URL = "/sound-data.json";
 
 export class GameRuntime {
   private readonly canvas: HTMLCanvasElement;
@@ -39,6 +40,7 @@ export class GameRuntime {
   private mgMuzzleMarker: THREE.Object3D | null = null;
   private selectedTankModelFile = DEFAULT_TANK_MODEL_FILE;
   private readonly tankModelCacheVersion = "20260411";
+  private tankModelLoadId = 0;
   private playerTrackLinks: Array<{
     mesh: THREE.Mesh;
     t: number;
@@ -779,6 +781,39 @@ export class GameRuntime {
     return `/models/${encodeURIComponent(fileName)}?v=${this.tankModelCacheVersion}`;
   }
 
+  private disposeMaterial(material: THREE.Material): void {
+    for (const value of Object.values(material)) {
+      if (
+        value &&
+        typeof value === "object" &&
+        "dispose" in value &&
+        typeof value.dispose === "function"
+      ) {
+        value.dispose();
+      }
+    }
+    material.dispose();
+  }
+
+  private disposeObject3D(object: THREE.Object3D): void {
+    object.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        const material = child.material;
+        if (Array.isArray(material)) {
+          material.forEach((item) => this.disposeMaterial(item));
+        } else {
+          this.disposeMaterial(material);
+        }
+      }
+    });
+  }
+
+  private removeAndDispose(object: THREE.Object3D): void {
+    object.parent?.remove(object);
+    this.disposeObject3D(object);
+  }
+
   public setTankModelFile(fileName: string): void {
     const next = fileName.trim();
     if (this.running) return;
@@ -792,6 +827,7 @@ export class GameRuntime {
   }
 
   private async tryLoadExternalTankModel(): Promise<void> {
+    const loadId = ++this.tankModelLoadId;
     const loader = new GLTFLoader();
     const filesToTry = Array.from(
       new Set([
@@ -804,6 +840,10 @@ export class GameRuntime {
     await new Promise<void>((resolve) => {
       const tryIndex = (index: number): void => {
         if (index >= filesToTry.length) {
+          if (loadId !== this.tankModelLoadId) {
+            resolve();
+            return;
+          }
           // No external model found: keep procedural fallback.
           this.usingExternalTankModel = false;
           this.cannonMesh.visible = true;
@@ -821,6 +861,11 @@ export class GameRuntime {
           this.getTankModelUrl(currentFile),
           (gltf) => {
             const model = gltf.scene;
+            if (loadId !== this.tankModelLoadId) {
+              this.disposeObject3D(model);
+              resolve();
+              return;
+            }
 
             model.traverse((obj) => {
               if (obj instanceof THREE.Mesh) {
@@ -867,7 +912,7 @@ export class GameRuntime {
             ]);
             for (const child of [...this.tank.children]) {
               if (!keep.has(child)) {
-                this.tank.remove(child);
+                this.removeAndDispose(child);
               }
             }
 
@@ -914,6 +959,10 @@ export class GameRuntime {
           },
           undefined,
           () => {
+            if (loadId !== this.tankModelLoadId) {
+              resolve();
+              return;
+            }
             tryIndex(index + 1);
           },
         );
@@ -1210,7 +1259,7 @@ export class GameRuntime {
             this.playSynthImpact();
           }
         }
-        this.scene.remove(b.mesh);
+        this.removeAndDispose(b.mesh);
         dead.push(i);
         return;
       }
@@ -1220,7 +1269,7 @@ export class GameRuntime {
         Math.abs(b.mesh.position.x) > 85 ||
         Math.abs(b.mesh.position.z) > 85
       ) {
-        this.scene.remove(b.mesh);
+        this.removeAndDispose(b.mesh);
         dead.push(i);
         return;
       }
@@ -1232,14 +1281,14 @@ export class GameRuntime {
             (b.type === "cannon" ? 3.5 : 1.5)
           ) {
             e.hp -= b.type === "cannon" ? 1 : 0.25;
-            this.scene.remove(b.mesh);
+            this.removeAndDispose(b.mesh);
             dead.push(i);
             this.spawnExplosion(
               b.mesh.position.clone(),
               b.type === "cannon" ? 0.92 : 0.45,
             );
             if (e.hp <= 0) {
-              this.scene.remove(e.mesh);
+              this.removeAndDispose(e.mesh);
               this.score += 1;
               if (!this.playAny(["explosion", "boom"], 0.95)) {
                 this.playSynthExplosion(1);
@@ -1252,7 +1301,7 @@ export class GameRuntime {
         }
       } else if (b.mesh.position.distanceTo(this.tank.position) < 3.5) {
         this.hp = Math.max(0, this.hp - 2);
-        this.scene.remove(b.mesh);
+        this.removeAndDispose(b.mesh);
         dead.push(i);
         this.spawnExplosion(b.mesh.position.clone(), 0.38);
         this.screenShake = 0.15;
@@ -1296,7 +1345,7 @@ export class GameRuntime {
       }
       p.mesh.scale.setScalar(p.smoke ? 1 + t * 1.9 : 1 + t * 0.45);
       if (p.life <= 0) {
-        this.scene.remove(p.mesh);
+        this.removeAndDispose(p.mesh);
         dead.push(i);
       }
     });
@@ -1524,7 +1573,19 @@ export class GameRuntime {
   public startGame(): void {
     this.running = true;
     this.gameOver = false;
-    void this.ensureAudioLoaded();
+    void this.ensureAudioLoaded().then(() => {
+      if (!this.running) return;
+      if (this.playAny(["tank_start"], 0.85)) {
+        this.engineState = "starting";
+        window.setTimeout(() => {
+          if (this.running && this.engineState === "starting") {
+            this.idleEngine();
+          }
+        }, 900);
+      } else {
+        this.idleEngine();
+      }
+    });
     this.requestPointerLock();
     this.pushHud();
   }
@@ -1538,9 +1599,9 @@ export class GameRuntime {
     this.cannonAmmo = CONFIG.MAX_CANNON;
     this.mgAmmo = CONFIG.MAX_MG;
     this.repairT = 0;
-    this.bullets.forEach((b) => this.scene.remove(b.mesh));
-    this.particles.forEach((p) => this.scene.remove(p.mesh));
-    this.enemies.forEach((e) => this.scene.remove(e.mesh));
+    this.bullets.forEach((b) => this.removeAndDispose(b.mesh));
+    this.particles.forEach((p) => this.removeAndDispose(p.mesh));
+    this.enemies.forEach((e) => this.removeAndDispose(e.mesh));
     this.bullets = [];
     this.particles = [];
     this.enemies = [];
@@ -1591,6 +1652,10 @@ export class GameRuntime {
       this.audioCtx = null;
     }
 
+    this.bullets = [];
+    this.particles = [];
+    this.enemies = [];
+    this.disposeObject3D(this.scene);
     this.renderer.dispose();
   }
 
@@ -1602,9 +1667,73 @@ export class GameRuntime {
       await this.audioCtx.resume();
     }
     if (!this.soundLoadPromise) {
-      this.soundLoadPromise = Promise.resolve();
+      this.soundLoadPromise = this.loadSoundData();
     }
     await this.soundLoadPromise;
+  }
+
+  private async loadSoundData(): Promise<void> {
+    if (!this.audioCtx) return;
+
+    try {
+      const response = await fetch(SOUND_DATA_URL, { cache: "force-cache" });
+      if (!response.ok) return;
+
+      const text = await response.text();
+      const entries = this.parseSoundData(text);
+      await Promise.all(
+        entries.map(async ([key, dataUrl]) => {
+          const audioData = this.dataUrlToArrayBuffer(dataUrl);
+          if (!audioData) return;
+
+          try {
+            this.soundBufs[key] = await this.audioCtx!.decodeAudioData(
+              audioData,
+            );
+          } catch {
+            // Synthesized fallbacks cover clips that the browser cannot decode.
+          }
+        }),
+      );
+    } catch {
+      // Audio is optional; keep gameplay running with synthesized fallbacks.
+    }
+  }
+
+  private parseSoundData(text: string): Array<[string, string]> {
+    const entries: Array<[string, string]> = [];
+    const soundPattern = /([A-Za-z0-9_]+)\s*:\s*'(data:audio\/[^']+)'/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = soundPattern.exec(text))) {
+      entries.push([match[1], match[2]]);
+    }
+
+    return entries;
+  }
+
+  private dataUrlToArrayBuffer(dataUrl: string): ArrayBuffer | null {
+    const commaIndex = dataUrl.indexOf(",");
+    if (commaIndex === -1) return null;
+
+    const meta = dataUrl.slice(0, commaIndex);
+    const data = dataUrl.slice(commaIndex + 1);
+
+    if (meta.includes(";base64")) {
+      const binary = window.atob(data);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes.buffer;
+    }
+
+    const decoded = window.decodeURIComponent(data);
+    const bytes = new Uint8Array(decoded.length);
+    for (let i = 0; i < decoded.length; i++) {
+      bytes[i] = decoded.charCodeAt(i);
+    }
+    return bytes.buffer;
   }
 
   private stopEngineNode(): void {
@@ -1631,6 +1760,7 @@ export class GameRuntime {
 
     const buffer =
       this.soundBufs.tank_running ||
+      this.soundBufs.tank_loop ||
       this.soundBufs.engine_running ||
       this.soundBufs.tank_idle ||
       this.soundBufs.engine_idle;

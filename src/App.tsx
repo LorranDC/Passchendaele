@@ -18,6 +18,7 @@ type TankOption = {
 };
 
 const MODELS_MANIFEST_URL = "/models/models.json";
+const DEFAULT_TANK_MODEL = "Mark_V_Male.glb";
 
 const formatTankLabel = (fileName: string): string =>
   fileName
@@ -44,7 +45,7 @@ function App() {
   const runtimeRef = useRef<RuntimeHandle | null>(null);
   const [hud, setHud] = useState<HudState>(initialHud);
   const [loadingRuntime, setLoadingRuntime] = useState(false);
-  const [selectedTankModel, setSelectedTankModel] = useState("");
+  const [selectedTankModel, setSelectedTankModel] = useState(DEFAULT_TANK_MODEL);
   const [tankOptions, setTankOptions] = useState<TankOption[]>([]);
 
   useEffect(() => {
@@ -202,6 +203,11 @@ function App() {
                 value={selectedTankModel}
                 onChange={(e) => onTankModelChange(e.target.value)}
               >
+                {tankOptions.length === 0 ? (
+                  <option value={selectedTankModel}>
+                    {formatTankLabel(selectedTankModel)}
+                  </option>
+                ) : null}
                 {tankOptions.map((opt) => (
                   <option key={opt.value} value={opt.value}>
                     {opt.label}
@@ -231,6 +237,11 @@ function App() {
                 value={selectedTankModel}
                 onChange={(e) => onTankModelChange(e.target.value)}
               >
+                {tankOptions.length === 0 ? (
+                  <option value={selectedTankModel}>
+                    {formatTankLabel(selectedTankModel)}
+                  </option>
+                ) : null}
                 {tankOptions.map((opt) => (
                   <option key={opt.value} value={opt.value}>
                     {opt.label}
