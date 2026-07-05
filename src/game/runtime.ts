@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import machineGunSingleShotUrl from "../assets/audio/single-shot-machine-gun.mp3";
 import { CONFIG } from "./config";
 import type { Bullet, Enemy, HudState, Particle, Weapon } from "./types";
 
@@ -1695,8 +1696,24 @@ export class GameRuntime {
           }
         }),
       );
+      await this.loadAudioUrl("mg_fire", machineGunSingleShotUrl);
+      this.soundBufs.mg = this.soundBufs.mg_fire;
     } catch {
       // Audio is optional; keep gameplay running with synthesized fallbacks.
+    }
+  }
+
+  private async loadAudioUrl(key: string, url: string): Promise<void> {
+    if (!this.audioCtx) return;
+
+    try {
+      const response = await fetch(url, { cache: "force-cache" });
+      if (!response.ok) return;
+
+      const audioData = await response.arrayBuffer();
+      this.soundBufs[key] = await this.audioCtx.decodeAudioData(audioData);
+    } catch {
+      // Synthesized fallbacks cover clips that the browser cannot decode.
     }
   }
 
