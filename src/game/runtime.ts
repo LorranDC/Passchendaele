@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import enemyMachineGunSingleShotUrl from "../assets/audio/enemy-mg-single-shot.mp3";
 import machineGunSingleShotUrl from "../assets/audio/single-shot-machine-gun.mp3";
 import { CONFIG } from "./config";
 import type { Bullet, Enemy, HudState, Particle, Weapon } from "./types";
@@ -13,7 +14,6 @@ const BASE_HINT =
   "V - 1a pessoa | W/S mover | A/D girar | Mouse mirar | Clique atirar | TAB trocar arma | R reparar";
 const DEFAULT_TANK_MODEL_FILE = "Mark_V_Male.glb";
 const LEGACY_TANK_MODEL_FILE = "player-tank.glb";
-const SOUND_DATA_URL = "/sound-data.json";
 
 export class GameRuntime {
   private readonly canvas: HTMLCanvasElement;
@@ -89,10 +89,8 @@ export class GameRuntime {
   private audioCtx: AudioContext | null = null;
   private soundLoadPromise: Promise<void> | null = null;
   private soundBufs: Record<string, AudioBuffer> = {};
-  private noiseBuffer: AudioBuffer | null = null;
   private engineNode: AudioBufferSourceNode | null = null;
   private engineGain: GainNode | null = null;
-  private engineState: "off" | "starting" | "running" | "idle" = "off";
   private readonly bulletAxis = new THREE.Vector3(0, 1, 0);
 
   private readonly onMouseMoveBound = (e: MouseEvent) => this.onMouseMove(e);
@@ -713,7 +711,10 @@ export class GameRuntime {
     this.enemies.push({
       mesh: g,
       hp: 3,
-      shootT: 2 + Math.random() * 4,
+      mgCooldownT: 1.5 + Math.random() * 2.5,
+      mgBurstT: 0,
+      mgBurstShots: 0,
+      cannonT: 4 + Math.random() * 5,
       patrol: new THREE.Vector3(
         (Math.random() - 0.5) * 65,
         0,
@@ -1150,25 +1151,37 @@ export class GameRuntime {
     this.screenShake = Math.max(this.screenShake, 0.12 + strength * 0.2);
   }
 
-  private enemyShoot(e: Enemy): void {
+  private getEnemyFireDir(e: Enemy, spread = 0.1): THREE.Vector3 {
     const dir = new THREE.Vector3()
       .subVectors(this.tank.position, e.mesh.position)
       .normalize();
-    dir.x += (Math.random() - 0.5) * 0.1;
-    dir.z += (Math.random() - 0.5) * 0.1;
-    dir.normalize();
+    dir.x += (Math.random() - 0.5) * spread;
+    dir.y += (Math.random() - 0.5) * spread * 0.28;
+    dir.z += (Math.random() - 0.5) * spread;
+    return dir.normalize();
+  }
+
+  private spawnEnemyBullet(
+    e: Enemy,
+    type: "enemy" | "enemyCannon",
+    dir: THREE.Vector3,
+  ): void {
+    const isCannon = type === "enemyCannon";
 
     const blt = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.05, 0.06, 0.32, 8),
+      isCannon
+        ? new THREE.SphereGeometry(0.18, 10, 10)
+        : new THREE.CylinderGeometry(0.05, 0.06, 0.32, 8),
       new THREE.MeshStandardMaterial({
-        color: 0xff5a3a,
-        emissive: 0x7f180e,
-        emissiveIntensity: 0.8,
+        color: isCannon ? 0xff9f4a : 0xff5a3a,
+        emissive: isCannon ? 0x9a3f12 : 0x7f180e,
+        emissiveIntensity: isCannon ? 1 : 0.8,
         roughness: 0.35,
         metalness: 0.1,
       }),
     );
-    blt.position.copy(e.mesh.position).add(new THREE.Vector3(0, 1, 0));
+    const muzzlePos = e.mesh.localToWorld(new THREE.Vector3(0, 0.95, -2.9));
+    blt.position.copy(muzzlePos);
     blt.castShadow = false;
     blt.receiveShadow = false;
     blt.quaternion.setFromUnitVectors(this.bulletAxis, dir);
@@ -1176,13 +1189,26 @@ export class GameRuntime {
 
     this.bullets.push({
       mesh: blt,
-      vel: dir.multiplyScalar(CONFIG.BULLET_SPEED_ENEMY),
-      type: "enemy",
-      life: 2.8,
+      vel: dir.multiplyScalar(
+        isCannon ? CONFIG.BULLET_SPEED_CANNON * 0.72 : CONFIG.BULLET_SPEED_ENEMY,
+      ),
+      type,
+      life: isCannon ? 4.2 : 2.8,
     });
+  }
 
-    if (!this.playAny(["enemy_fire", "enemy_shot"], 0.55)) {
+  private enemyShootMg(e: Enemy): void {
+    this.spawnEnemyBullet(e, "enemy", this.getEnemyFireDir(e, 0.14));
+    if (!this.playSpatialAny(["enemy_fire", "enemy_shot"], e.mesh.position)) {
       this.playSynthShot("enemy");
+    }
+  }
+
+  private enemyShootCannon(e: Enemy): void {
+    this.spawnEnemyBullet(e, "enemyCannon", this.getEnemyFireDir(e, 0.045));
+    this.spawnMuzzleFlash(e.mesh.localToWorld(new THREE.Vector3(0, 0.95, -2.9)), true);
+    if (!this.playSpatialAny(["enemy_cannon", "cannon_fire", "cannon"], e.mesh.position)) {
+      this.playSynthShot("cannon");
     }
   }
 
@@ -1219,10 +1245,30 @@ export class GameRuntime {
       e.mesh.position.x = THREE.MathUtils.clamp(e.mesh.position.x, -60, 60);
       e.mesh.position.z = THREE.MathUtils.clamp(e.mesh.position.z, -60, 60);
 
-      e.shootT -= dt;
-      if (e.shootT <= 0 && dist < 52) {
-        e.shootT = 3 + Math.random() * 4;
-        this.enemyShoot(e);
+      if (dist < 52) {
+        e.mgCooldownT -= dt;
+        if (e.mgCooldownT <= 0 && e.mgBurstShots === 0) {
+          e.mgBurstShots = 4 + Math.floor(Math.random() * 4);
+          e.mgBurstT = 0;
+          e.mgCooldownT = 3.2 + Math.random() * 3;
+        }
+
+        if (e.mgBurstShots > 0) {
+          e.mgBurstT -= dt;
+          if (e.mgBurstT <= 0) {
+            this.enemyShootMg(e);
+            e.mgBurstShots -= 1;
+            e.mgBurstT = 0.09 + Math.random() * 0.06;
+          }
+        }
+      }
+
+      if (dist < 64) {
+        e.cannonT -= dt;
+        if (e.cannonT <= 0) {
+          e.cannonT = 7 + Math.random() * 5;
+          this.enemyShootCannon(e);
+        }
       }
     });
 
@@ -1234,8 +1280,17 @@ export class GameRuntime {
 
     this.bullets.forEach((b, i) => {
       const gravity =
-        b.type === "cannon" ? 1.1 : b.type === "mg" ? 0.58 : 0.78;
-      const drag = b.type === "cannon" ? 0.05 : b.type === "mg" ? 0.12 : 0.08;
+        b.type === "cannon" || b.type === "enemyCannon"
+          ? 1.1
+          : b.type === "mg"
+            ? 0.58
+            : 0.78;
+      const drag =
+        b.type === "cannon" || b.type === "enemyCannon"
+          ? 0.05
+          : b.type === "mg"
+            ? 0.12
+            : 0.08;
       b.vel.multiplyScalar(Math.exp(-drag * dt));
       b.vel.y -= 9.8 * dt * gravity;
       b.mesh.position.addScaledVector(b.vel, dt);
@@ -1249,7 +1304,7 @@ export class GameRuntime {
 
       const ty = this.terrainH(b.mesh.position.x, b.mesh.position.z);
       if (b.mesh.position.y <= ty + 0.05) {
-        if (b.type === "cannon") {
+        if (b.type === "cannon" || b.type === "enemyCannon") {
           this.spawnExplosion(b.mesh.position.clone(), 0.72);
           if (!this.playAny(["explosion", "boom"], 0.78)) {
             this.playSynthExplosion(0.72);
@@ -1275,7 +1330,7 @@ export class GameRuntime {
         return;
       }
 
-      if (b.type !== "enemy") {
+      if (b.type === "cannon" || b.type === "mg") {
         for (const e of this.enemies) {
           if (
             b.mesh.position.distanceTo(e.mesh.position) <
@@ -1300,12 +1355,18 @@ export class GameRuntime {
             break;
           }
         }
-      } else if (b.mesh.position.distanceTo(this.tank.position) < 3.5) {
-        this.hp = Math.max(0, this.hp - 2);
+      } else if (
+        b.mesh.position.distanceTo(this.tank.position) <
+        (b.type === "enemyCannon" ? 4.8 : 3.5)
+      ) {
+        this.hp = Math.max(0, this.hp - (b.type === "enemyCannon" ? 18 : 2));
         this.removeAndDispose(b.mesh);
         dead.push(i);
-        this.spawnExplosion(b.mesh.position.clone(), 0.38);
-        this.screenShake = 0.15;
+        this.spawnExplosion(
+          b.mesh.position.clone(),
+          b.type === "enemyCannon" ? 0.95 : 0.38,
+        );
+        this.screenShake = b.type === "enemyCannon" ? 0.35 : 0.15;
         if (!this.playAny(["hit", "armor_hit"], 0.85)) {
           this.playSynthImpact();
         }
@@ -1574,19 +1635,7 @@ export class GameRuntime {
   public startGame(): void {
     this.running = true;
     this.gameOver = false;
-    void this.ensureAudioLoaded().then(() => {
-      if (!this.running) return;
-      if (this.playAny(["tank_start"], 0.85)) {
-        this.engineState = "starting";
-        window.setTimeout(() => {
-          if (this.running && this.engineState === "starting") {
-            this.idleEngine();
-          }
-        }, 900);
-      } else {
-        this.idleEngine();
-      }
-    });
+    void this.ensureAudioLoaded();
     this.requestPointerLock();
     this.pushHud();
   }
@@ -1647,7 +1696,6 @@ export class GameRuntime {
     window.removeEventListener("resize", this.onResizeBound);
 
     this.stopEngineNode();
-    this.engineState = "off";
     if (this.audioCtx) {
       void this.audioCtx.close();
       this.audioCtx = null;
@@ -1674,33 +1722,10 @@ export class GameRuntime {
   }
 
   private async loadSoundData(): Promise<void> {
-    if (!this.audioCtx) return;
-
-    try {
-      const response = await fetch(SOUND_DATA_URL, { cache: "force-cache" });
-      if (!response.ok) return;
-
-      const text = await response.text();
-      const entries = this.parseSoundData(text);
-      await Promise.all(
-        entries.map(async ([key, dataUrl]) => {
-          const audioData = this.dataUrlToArrayBuffer(dataUrl);
-          if (!audioData) return;
-
-          try {
-            this.soundBufs[key] = await this.audioCtx!.decodeAudioData(
-              audioData,
-            );
-          } catch {
-            // Synthesized fallbacks cover clips that the browser cannot decode.
-          }
-        }),
-      );
-      await this.loadAudioUrl("mg_fire", machineGunSingleShotUrl);
-      this.soundBufs.mg = this.soundBufs.mg_fire;
-    } catch {
-      // Audio is optional; keep gameplay running with synthesized fallbacks.
-    }
+    await this.loadAudioUrl("mg_fire", machineGunSingleShotUrl);
+    this.soundBufs.mg = this.soundBufs.mg_fire;
+    await this.loadAudioUrl("enemy_fire", enemyMachineGunSingleShotUrl);
+    this.soundBufs.enemy_shot = this.soundBufs.enemy_fire;
   }
 
   private async loadAudioUrl(key: string, url: string): Promise<void> {
@@ -1715,42 +1740,6 @@ export class GameRuntime {
     } catch {
       // Synthesized fallbacks cover clips that the browser cannot decode.
     }
-  }
-
-  private parseSoundData(text: string): Array<[string, string]> {
-    const entries: Array<[string, string]> = [];
-    const soundPattern = /([A-Za-z0-9_]+)\s*:\s*'(data:audio\/[^']+)'/g;
-    let match: RegExpExecArray | null;
-
-    while ((match = soundPattern.exec(text))) {
-      entries.push([match[1], match[2]]);
-    }
-
-    return entries;
-  }
-
-  private dataUrlToArrayBuffer(dataUrl: string): ArrayBuffer | null {
-    const commaIndex = dataUrl.indexOf(",");
-    if (commaIndex === -1) return null;
-
-    const meta = dataUrl.slice(0, commaIndex);
-    const data = dataUrl.slice(commaIndex + 1);
-
-    if (meta.includes(";base64")) {
-      const binary = window.atob(data);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) {
-        bytes[i] = binary.charCodeAt(i);
-      }
-      return bytes.buffer;
-    }
-
-    const decoded = window.decodeURIComponent(data);
-    const bytes = new Uint8Array(decoded.length);
-    for (let i = 0; i < decoded.length; i++) {
-      bytes[i] = decoded.charCodeAt(i);
-    }
-    return bytes.buffer;
   }
 
   private stopEngineNode(): void {
@@ -1770,67 +1759,8 @@ export class GameRuntime {
     }
   }
 
-  private loopEngine(): void {
-    if (!this.audioCtx || this.engineState === "running") return;
-    this.engineState = "running";
-    this.stopEngineNode();
-
-    const buffer =
-      this.soundBufs.tank_running ||
-      this.soundBufs.tank_loop ||
-      this.soundBufs.engine_running ||
-      this.soundBufs.tank_idle ||
-      this.soundBufs.engine_idle;
-    if (!buffer) return;
-
-    this.engineNode = this.audioCtx.createBufferSource();
-    this.engineNode.buffer = buffer;
-    this.engineNode.loop = true;
-    this.engineGain = this.audioCtx.createGain();
-    this.engineGain.gain.value = 0.9;
-
-    this.engineNode.connect(this.engineGain);
-    this.engineGain.connect(this.audioCtx.destination);
-    this.engineNode.start();
-  }
-
-  private idleEngine(): void {
-    if (!this.audioCtx || this.engineState === "idle") return;
-    this.engineState = "idle";
-    this.stopEngineNode();
-
-    const buffer = this.soundBufs.tank_idle || this.soundBufs.engine_idle;
-    if (!buffer) return;
-
-    this.engineNode = this.audioCtx.createBufferSource();
-    this.engineNode.buffer = buffer;
-    this.engineNode.loop = true;
-    this.engineGain = this.audioCtx.createGain();
-    this.engineGain.gain.value = 0.7;
-
-    this.engineNode.connect(this.engineGain);
-    this.engineGain.connect(this.audioCtx.destination);
-    this.engineNode.start();
-  }
-
   private updateEngine(moving: boolean): void {
-    if (
-      !this.audioCtx ||
-      this.engineState === "off" ||
-      this.engineState === "starting"
-    ) {
-      return;
-    }
-
-    const want = moving ? "running" : "idle";
-    if (want === "running" && this.engineState !== "running") this.loopEngine();
-    if (want === "idle" && this.engineState !== "idle") this.idleEngine();
-
-    if (this.engineNode && this.engineGain) {
-      const spd = Math.abs(this.tankVel) / CONFIG.TANK_FWD_MAX;
-      this.engineNode.playbackRate.value = 0.85 + spd * 0.35;
-      this.engineGain.gain.value = 0.6 + spd * 0.4;
-    }
+    void moving;
   }
 
   private playAny(keys: string[], volume = 1): boolean {
@@ -1848,115 +1778,44 @@ export class GameRuntime {
     return true;
   }
 
-  private getNoiseBuffer(): AudioBuffer | null {
-    if (!this.audioCtx) return null;
-    if (this.noiseBuffer) return this.noiseBuffer;
+  private playSpatialAny(keys: string[], position: THREE.Vector3): boolean {
+    if (!this.audioCtx) return false;
+    const key = keys.find((candidate) => this.soundBufs[candidate]);
+    if (!key) return false;
 
-    const sampleRate = this.audioCtx.sampleRate;
-    const frameCount = sampleRate;
-    const buffer = this.audioCtx.createBuffer(1, frameCount, sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < frameCount; i++) {
-      data[i] = Math.random() * 2 - 1;
-    }
-    this.noiseBuffer = buffer;
-    return buffer;
+    const dist = position.distanceTo(this.tank.position);
+    const near = 10;
+    const far = 58;
+    const closeness = 1 - THREE.MathUtils.clamp((dist - near) / (far - near), 0, 1);
+    const volume = THREE.MathUtils.lerp(0.12, 0.82, closeness);
+    const source = this.audioCtx.createBufferSource();
+    source.buffer = this.soundBufs[key];
+
+    const gain = this.audioCtx.createGain();
+    gain.gain.value = volume;
+
+    source.connect(gain);
+    gain.connect(this.audioCtx.destination);
+    source.start();
+    return true;
   }
 
   private playSynthShot(kind: "cannon" | "mg" | "enemy"): void {
-    if (!this.audioCtx) return;
-    const ctx = this.audioCtx;
-    const now = ctx.currentTime;
-
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    const filter = ctx.createBiquadFilter();
-    osc.connect(filter);
-    filter.connect(gain);
-    gain.connect(ctx.destination);
-
-    if (kind === "cannon") {
-      osc.type = "triangle";
-      osc.frequency.setValueAtTime(180, now);
-      osc.frequency.exponentialRampToValueAtTime(48, now + 0.2);
-      filter.type = "lowpass";
-      filter.frequency.setValueAtTime(1200, now);
-      gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(0.52, now + 0.015);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
-      osc.start(now);
-      osc.stop(now + 0.24);
-      return;
-    }
-
-    osc.type = kind === "mg" ? "square" : "sawtooth";
-    osc.frequency.setValueAtTime(kind === "mg" ? 520 : 360, now);
-    osc.frequency.exponentialRampToValueAtTime(kind === "mg" ? 250 : 170, now + 0.08);
-    filter.type = "bandpass";
-    filter.Q.value = 1.8;
-    filter.frequency.setValueAtTime(kind === "mg" ? 2400 : 1800, now);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(kind === "mg" ? 0.12 : 0.16, now + 0.006);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
-    osc.start(now);
-    osc.stop(now + 0.12);
+    void kind;
   }
 
   private playSynthExplosion(intensity: number): void {
-    if (!this.audioCtx) return;
-    const ctx = this.audioCtx;
-    const noise = this.getNoiseBuffer();
-    if (!noise) return;
-    const now = ctx.currentTime;
-
-    const source = ctx.createBufferSource();
-    source.buffer = noise;
-
-    const filter = ctx.createBiquadFilter();
-    filter.type = "lowpass";
-    filter.frequency.setValueAtTime(900 + intensity * 420, now);
-    filter.frequency.exponentialRampToValueAtTime(130, now + 0.6);
-
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.46 * intensity, now + 0.018);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.72);
-
-    source.connect(filter);
-    filter.connect(gain);
-    gain.connect(ctx.destination);
-    source.start(now);
-    source.stop(now + 0.74);
+    void intensity;
   }
 
   private playSynthImpact(): void {
-    if (!this.audioCtx) return;
-    const ctx = this.audioCtx;
-    const noise = this.getNoiseBuffer();
-    if (!noise) return;
-    const now = ctx.currentTime;
-
-    const source = ctx.createBufferSource();
-    source.buffer = noise;
-    const filter = ctx.createBiquadFilter();
-    filter.type = "highpass";
-    filter.frequency.setValueAtTime(1400, now);
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.2, now + 0.005);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.07);
-    source.connect(filter);
-    filter.connect(gain);
-    gain.connect(ctx.destination);
-    source.start(now);
-    source.stop(now + 0.08);
+    return;
   }
 
   private endGame(): void {
     this.running = false;
     this.gameOver = true;
     this.stopEngineNode();
-    this.engineState = "off";
     if (document.exitPointerLock) document.exitPointerLock();
     this.pushHud();
   }

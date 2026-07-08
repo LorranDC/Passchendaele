@@ -18,14 +18,17 @@ export type HudState = {
 export type Enemy = {
   mesh: THREE.Group;
   hp: number;
-  shootT: number;
+  mgCooldownT: number;
+  mgBurstT: number;
+  mgBurstShots: number;
+  cannonT: number;
   patrol: THREE.Vector3;
 };
 
 export type Bullet = {
   mesh: THREE.Mesh;
   vel: THREE.Vector3;
-  type: "enemy" | Weapon;
+  type: "enemy" | "enemyCannon" | Weapon;
   life: number;
 };
 
