@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import cannonReloadUrl from "../assets/audio/cannon-reload.mp3";
 import enemyMachineGunSingleShotUrl from "../assets/audio/enemy-mg-single-shot.mp3";
 import machineGunSingleShotUrl from "../assets/audio/single-shot-machine-gun.mp3";
 import { CONFIG } from "./config";
@@ -1036,9 +1037,7 @@ export class GameRuntime {
 
     this.spawnMuzzleFlash(pos, this.weapon === "cannon");
     if (this.weapon === "cannon") {
-      if (!this.playAny(["cannon_fire", "cannon", "gun_fire"], 0.95)) {
-        this.playSynthShot("cannon");
-      }
+      this.playAny(["cannon_reload"], 0.85);
     } else {
       if (!this.playAny(["mg_fire", "mg", "machinegun"], 0.72)) {
         this.playSynthShot("mg");
@@ -1722,6 +1721,7 @@ export class GameRuntime {
   }
 
   private async loadSoundData(): Promise<void> {
+    await this.loadAudioUrl("cannon_reload", cannonReloadUrl);
     await this.loadAudioUrl("mg_fire", machineGunSingleShotUrl);
     this.soundBufs.mg = this.soundBufs.mg_fire;
     await this.loadAudioUrl("enemy_fire", enemyMachineGunSingleShotUrl);
