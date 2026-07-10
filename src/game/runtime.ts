@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import cannonReloadUrl from "../assets/audio/cannon-reload.mp3";
+import cannonShotUrl from "../assets/audio/cannon-shot.mp3";
 import enemyMachineGunSingleShotUrl from "../assets/audio/enemy-mg-single-shot.mp3";
 import machineGunSingleShotUrl from "../assets/audio/single-shot-machine-gun.mp3";
 import { CONFIG } from "./config";
@@ -70,7 +71,10 @@ export class GameRuntime {
   private weapon: Weapon = "cannon";
   private cannonAmmo = CONFIG.MAX_CANNON;
   private mgAmmo = CONFIG.MAX_MG;
-  private lastShot = 0;
+  private lastShotAt: Record<Weapon, number> = {
+    cannon: -Infinity,
+    mg: -Infinity,
+  };
 
   private enemies: Enemy[] = [];
   private bullets: Bullet[] = [];
@@ -979,11 +983,11 @@ export class GameRuntime {
     const now = this.clock.getElapsedTime();
     const reload =
       this.weapon === "cannon" ? CONFIG.RELOAD_CANNON : CONFIG.RELOAD_MG;
-    if (now - this.lastShot < reload) return;
+    if (now - this.lastShotAt[this.weapon] < reload) return;
     if (this.weapon === "cannon" && this.cannonAmmo <= 0) return;
     if (this.weapon === "mg" && this.mgAmmo <= 0) return;
 
-    this.lastShot = now;
+    this.lastShotAt[this.weapon] = now;
     const dir = this.getFireDir();
     const pos = this.getMuzzlePos();
 
@@ -1037,6 +1041,7 @@ export class GameRuntime {
 
     this.spawnMuzzleFlash(pos, this.weapon === "cannon");
     if (this.weapon === "cannon") {
+      this.playAny(["cannon_fire"], 0.95);
       this.playAny(["cannon_reload"], 0.85);
     } else {
       if (!this.playAny(["mg_fire", "mg", "machinegun"], 0.72)) {
@@ -1647,6 +1652,10 @@ export class GameRuntime {
     this.weapon = "cannon";
     this.cannonAmmo = CONFIG.MAX_CANNON;
     this.mgAmmo = CONFIG.MAX_MG;
+    this.lastShotAt = {
+      cannon: -Infinity,
+      mg: -Infinity,
+    };
     this.repairT = 0;
     this.bullets.forEach((b) => this.removeAndDispose(b.mesh));
     this.particles.forEach((p) => this.removeAndDispose(p.mesh));
@@ -1721,6 +1730,7 @@ export class GameRuntime {
   }
 
   private async loadSoundData(): Promise<void> {
+    await this.loadAudioUrl("cannon_fire", cannonShotUrl);
     await this.loadAudioUrl("cannon_reload", cannonReloadUrl);
     await this.loadAudioUrl("mg_fire", machineGunSingleShotUrl);
     this.soundBufs.mg = this.soundBufs.mg_fire;
