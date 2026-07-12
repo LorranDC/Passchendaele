@@ -3,7 +3,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import cannonReloadUrl from "../assets/audio/cannon-reload.mp3";
 import cannonShotUrl from "../assets/audio/cannon-shot.mp3";
 import enemyMachineGunSingleShotUrl from "../assets/audio/enemy-mg-single-shot.mp3";
-import machineGunSingleShotUrl from "../assets/audio/single-shot-machine-gun.mp3";
+import machineGunSingleShotUrl from "../assets/audio/single-shot-machine-gun.ogg";
 import { CONFIG } from "./config";
 import type { Bullet, Enemy, HudState, Particle, Weapon } from "./types";
 
